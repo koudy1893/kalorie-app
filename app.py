@@ -4,10 +4,10 @@ import plotly.express as px
 import gspread
 from datetime import datetime
 
-# 1. Nastavení stránky
-st.set_page_config(page_title="Kalorie Lukáš", layout="wide")
+# 1. Nastavenie stránky
+st.set_page_config(page_title="Kalórie Lukáš", layout="wide")
 
-# 2. Funkce pro autorizaci do Google Sheets (používá tvoje Secrets)
+# 2. Autorizácia (Secrets)
 def get_gsheet_client():
     credentials = {
         "type": "service_account",
@@ -24,41 +24,46 @@ def get_gsheet_client():
     gc = gspread.service_account_from_dict(credentials)
     return gc
 
-# --- SIDEBAR: FORMULÁŘ PRO ZÁPIS ---
+# --- SIDEBAR: KOMPLETNÝ FORMULÁR ---
 with st.sidebar:
-    st.header("📝 Přidat nový den")
+    st.header("📝 Pridať nový deň")
     with st.form("add_form", clear_on_submit=True):
-        new_date = st.date_input("Datum", datetime.now()).strftime('%d.%m.%Y')
-        new_weight = st.number_input("Váha (kg)", step=0.1, format="%.1f")
-        new_prijem = st.number_input("Příjem (kcal)", step=10)
-        new_steps = st.number_input("Kroky", step=100)
-        submit = st.form_submit_button("Uložit do tabulky")
+        f_date = st.date_input("Dátum", datetime.now()).strftime('%-d.%-m.%Y')
+        f_prijem = st.number_input("Príjem (kcal)", step=10)
+        f_vydaj = st.number_input("Výdaj (kcal)", step=10)
+        f_vaha = st.number_input("Váha(kg)", step=0.1, format="%.1f")
+        f_aktivita = st.selectbox("Aktivita", ["Rest day", "Silový tréning", "Fotbal", "Chůze na pásu", "Hike"])
+        f_kroky = st.number_input("Počet kroků", step=100)
+        
+        submit = st.form_submit_button("Uložiť do tabuľky")
 
     if submit:
         try:
             client = get_gsheet_client()
-            # Otevře tabulku podle ID
             sh = client.open_by_key("1-2iZnGaecjr2scBPQPETz4M6Ymw9B8NjaFM0cafouqE")
             worksheet = sh.worksheet("Lukáš")
             
-            # ZDE ZKONTROLUJ POŘADÍ SLOUPCŮ! 
-            # Pokud máš v tabulce nejdřív Datum, pak Váhu, pak Příjem a pak Kroky, je to takto:
-            worksheet.append_row([new_date, new_weight, new_prijem, new_steps])
+            # Výpočet deficitu (Prijem - Vydaj)
+            f_deficit = f_prijem - f_vydaj
             
-            st.success("Data byla úspěšně uložena do Google Sheets!")
-            st.balloons() # Malá oslava
-            st.cache_data.clear() # Smaže stará data, aby se hned načetla nová
+            # Zápis riadku presne podľa poradia v tvojej tabuľke (Stĺpce B až H)
+            # Poradie: Dátum, Príjem, Výdaj, Deficit, Váha, Aktivita, Počet krokov
+            worksheet.append_row([f_date, f_prijem, f_vydaj, f_deficit, f_vaha, f_aktivita, f_kroky], 
+                                 value_input_option='USER_ENTERED')
+            
+            st.success("Dáta uložené!")
+            st.balloons()
+            st.cache_data.clear()
         except Exception as e:
-            st.error(f"Chyba při zápisu: {e}")
+            st.error(f"Chyba pri zápise: {e}")
 
-# --- HLAVNÍ STRÁNKA: DASHBOARD ---
+# --- HLAVNÁ STRÁNKA ---
 st.title("🍎 Kalorické Tabulky: Lukáš")
 
-# Použijeme odkaz pro čtení (nejrychlejší způsob)
 URL_CSV = "https://docs.google.com/spreadsheets/d/1-2iZnGaecjr2scBPQPETz4M6Ymw9B8NjaFM0cafouqE/export?format=csv&gid=0"
 
 try:
-    # Inteligentní načtení dat (najde řádek Datum)
+    # Načítanie a hľadanie hlavičky
     raw_df = pd.read_csv(URL_CSV, header=None)
     header_row = None
     for i, row in raw_df.iterrows():
@@ -69,27 +74,31 @@ try:
     if header_row is not None:
         df = pd.read_csv(URL_CSV, skiprows=header_row)
         df.columns = [c.strip() for c in df.columns]
-        df = df.dropna(subset=['Datum'])
+        # Odstránime riadky kde nie je dátum
+        df = df[df['Datum'].notna()]
 
-        # Metriky
+        # Oprava NaN hodnôt: vezmeme posledný riadok, kde je reálne zadaná váha/príjem
+        valid_vaha = df[df['Váha(kg)'].notna() & (df['Váha(kg)'] != 0)]
+        valid_prijem = df[df['Příjem (kcal)'].notna() & (df['Příjem (kcal)'] != 0)]
+
         m1, m2 = st.columns(2)
-        vaha_col = 'Váha(kg)' # Uprav podle potřeby
-        prijem_col = 'Příjem (kcal)'
-        
-        if vaha_col in df.columns:
-            m1.metric("Poslední váha", f"{df[vaha_col].iloc[-1]} kg")
-        if prijem_col in df.columns:
-            m2.metric("Poslední příjem", f"{df[prijem_col].iloc[-1]} kcal")
+        if not valid_vaha.empty:
+            m1.metric("Posledná váha", f"{valid_vaha['Váha(kg)'].iloc[-1]} kg")
+        if not valid_prijem.empty:
+            m2.metric("Posledný príjem", f"{valid_prijem['Příjem (kcal)'].iloc[-1]} kcal")
 
-        # Graf
+        # Graf vývoja váhy (otočený pre lepšiu čitateľnosť, ak chceš)
         st.subheader("Vývoj váhy")
-        fig = px.line(df, x='Datum', y=vaha_col, markers=True, template="plotly_white")
+        # Pre istotu prevedieme váhu na čísla
+        df['Váha(kg)'] = pd.to_numeric(df['Váha(kg)'], errors='coerce')
+        fig = px.line(df.dropna(subset=['Váha(kg)']), x='Datum', y='Váha(kg)', 
+                      markers=True, template="plotly_dark", color_discrete_sequence=['#00f2ff'])
         st.plotly_chart(fig, use_container_width=True)
 
-        with st.expander("Zobrazit kompletní data"):
+        with st.expander("Zobraziť kompletné dáta"):
             st.dataframe(df)
     else:
-        st.warning("Čekám na data z tabulky...")
+        st.warning("Hľadám dáta v tabuľke...")
 
 except Exception as e:
-    st.error(f"Chyba při načítání: {e}")
+    st.error(f"Chyba: {e}")
